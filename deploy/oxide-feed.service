@@ -1,0 +1,21 @@
+[Unit]
+Description=OxideFeed — RSS News Aggregator & LLM Sanitizer
+Documentation=https://github.com/your-org/oxide-feed
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/oxide-feed
+EnvironmentFile=/opt/oxide-feed/.env
+ExecStart=/opt/oxide-feed/bin/oxide-feed
+Restart=on-failure
+RestartSec=30
+MemoryMax=50M
+CPUQuota=50%
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
