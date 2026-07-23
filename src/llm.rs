@@ -167,6 +167,12 @@ impl LlmClient {
     }
 
     /// Build the Gemini prompt with proper escaping.
+    ///
+    /// Includes explicit rejection rules based on production evaluation:
+    /// - REJECT daily market tickers (IHSG/Rupiah daily fluctuations without structural trigger)
+    /// - REJECT local government CSR/socialization events (Pemkot/Pemkab level)
+    /// - STRICT ALLOW for systemic regulatory changes, macro fiscal/monetary data,
+    ///   major geopolitical trade shifts, and material corporate actions.
     fn build_prompt(&self, title: &str, full_body: &str) -> String {
         // Use a plain String builder to avoid format! escaping issues with JSON braces
         let mut p = String::new();
@@ -192,7 +198,22 @@ impl LlmClient {
         p.push_str("IMPORTANT RULES:\n");
         p.push_str("- If is_important = false, set data = null (do not fill data).\n");
         p.push_str("- Only fill in what the article actually supports. ");
-        p.push_str("Never fabricate or speculate about impacts.\n\n");
+        p.push_str("Never fabricate or speculate about impacts.\n");
+        p.push_str("- REJECT articles that merely report daily stock index movements ");
+        p.push_str("(IHSG up/down by X points) or daily currency fluctuation ");
+        p.push_str("without a major policy or structural trigger.\n");
+        p.push_str("- REJECT regional/municipal level socialization or CSR events ");
+        p.push_str("(e.g., Pemkot/Pemkab financial literacy sessions, local CSR ");
+        p.push_str("programs without material impact on company valuation).\n");
+        p.push_str("- REJECT lifestyle, clickbait, automotive tips, consumer guides, ");
+        p.push_str("and celebrity gossip.\n");
+        p.push_str("\n");
+        p.push_str("STRICT ALLOW for:\n");
+        p.push_str("- Systemic regulatory changes (UU/Perpu/PP/RUU, government regulations)\n");
+        p.push_str("- Macro fiscal/monetary data (BI Rate, APBN Deficit, Inflation, trade balance)\n");
+        p.push_str("- Major geopolitical trade shifts (tariffs, trade wars, sanctions affecting Indonesia)\n");
+        p.push_str("- Material corporate actions (Debt default, Bond redemption, M&A, IPO, restructuring)\n");
+        p.push_str("\n");
 
         p.push_str("Title: ");
         p.push_str(title);

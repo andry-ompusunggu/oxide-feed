@@ -117,7 +117,7 @@ async fn main() {
         .build()
         .expect("Failed to build HTTP client");
 
-    // Initialize multi-model router (distributes calls across 3 Gemini models)
+    // Initialize multi-model router (distributes calls across 2 Gemini models — Opsi A)
     let model_router = Arc::new(ModelRouter::new(
         http_client.clone(),
         config.gemini_api_key.clone(),
@@ -211,8 +211,8 @@ async fn main() {
 
 /// Execute one full processing pipeline cycle.
 ///
-/// Multi-model distribution:
-/// - Round-robin across 3 Gemini models (3.1 Flash Lite, 3.5 Flash Lite, 3.6 Flash)
+/// Multi-model distribution (Opsi A — Best Quality):
+/// - Round-robin: gemini-3.5-flash-lite (primary, 475 RPD) + gemini-3.1-flash-lite (backup, 150 RPD)
 /// - Per-model RPD guard: skips model if it has reached its daily cap
 /// - Per-model RPM throttle: respects each model's rate limit
 /// - Circuit breaker: artikel < 200 chars skip Gemini, kirim QUICK ALERT

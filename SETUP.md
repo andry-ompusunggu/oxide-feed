@@ -35,15 +35,15 @@ cp .env.example .env
 |---|---|---|---|
 | `TELEGRAM_BOT_TOKEN` | ✅ Yes | — | Bot token from [@BotFather](https://t.me/BotFather) |
 | `TELEGRAM_CHAT_ID` | ✅ Yes | — | Target chat/channel ID (negative for groups) |
-| `GEMINI_API_KEY` | ✅ Yes | — | API key from [Google AI Studio](https://aistudio.google.com/app/apikey). Satu key untuk 3 model. |
+| `GEMINI_API_KEY` | ✅ Yes | — | API key from [Google AI Studio](https://aistudio.google.com/app/apikey). Satu key untuk 2 model. |
 | `RSS_FEEDS` | ❌ No | Detik.com | Comma-separated RSS URLs |
 | `POLL_INTERVAL_MINUTES` | ❌ No | `30` | Loop interval (semakin cepat = delay berita berkurang, tapi siklus lebih banyak) |
 | `OXIDE_WHITELIST` | ❌ No | *(built-in, 91 keywords)* | Comma-separated keyword whitelist (6 kategori) |
-| `OXIDE_BLACKLIST` | ❌ No | *(built-in, 30 keywords)* | Comma-separated keyword blacklist (3 kategori) |
+| `OXIDE_BLACKLIST` | ❌ No | *(built-in, ~35 keywords)* | Comma-separated keyword blacklist (termasuk daily noise filter) |
 | `OXIDE_ONBOARDING_COUNT` | ❌ No | `0` | Process N existing articles on first boot (0 = skip all) |
 | `OXIDE_AUTO_VACUUM_DAYS` | ❌ No | `0` | Auto-delete processed_news older than N days (0 = disabled) |
-| `OXIDE_MAX_ARTICLES_PER_CYCLE` | ❌ No | `40` | Maksimal artikel diproses AI per siklus. Dengan 3 model (total 918 RPD), aman di 40. |
-| `OXIDE_GEMINI_MODELS` | ❌ No | *(3 model built-in)* | JSON array override untuk custom model fleet. Format: `[{"name":"...","rpd_limit":450,"rpm_limit":15}]` |
+| `OXIDE_MAX_ARTICLES_PER_CYCLE` | ❌ No | `15` | Maksimal artikel diproses AI per siklus. Dengan Opsi A (total ~625 RPD), aman di 15. |
+| `OXIDE_GEMINI_MODELS` | ❌ No | *(Opsi A: 3.5 primary 475 + 3.1 backup 150)* | JSON array override untuk custom model fleet. Format: `[{"name":"...","rpd_limit":450,"rpm_limit":15}]` |
 | `OXIDE_PROCESS_EXISTING` | ❌ No | `0` | Test mode: process ALL existing articles |
 | `OXIDE_PRINT_ARTICLES` | ❌ No | `0` | Debug: log each article filter result |
 | `RUST_LOG` | ❌ No | `info` | Log level (`error`, `warn`, `info`, `debug`, `trace`) |
@@ -64,13 +64,18 @@ cp .env.example .env
 **Gemini API Key:**
 1. Go to [Google AI Studio](https://aistudio.google.com/app/apikey)
 2. Click **"Create API Key"** → select a Google Cloud project
-3. Copy the key (satu key untuk **3 model**: Flash Lite 3.1, Flash Lite 3.5, Flash 3.6)
+3. Copy the key (satu key untuk **2 model**: 3.5 Flash Lite primary, 3.1 Flash Lite backup)
 
-> 🧠 **Multi-Model:** OxideFeed sekarang mendistribusikan request ke 3 model Gemini secara round-robin:
-> - Gemini 3.1 Flash Lite: 15 RPM, 500 RPD (cap: 450)
-> - Gemini 3.5 Flash Lite: 15 RPM, 500 RPD (cap: 450)
-> - Gemini 3.6 Flash: 5 RPM, 20 RPD (cap: 18)
-> - **Total fleet: 918 RPD** — dari sebelumnya hanya 15 RPD!
+> 🧠 **Multi-Model — Opsi A (Best Quality):**
+> OxideFeed menggunakan 2 model Gemini dengan prioritas:
+> - **gemini-3.5-flash-lite**: 15 RPM, 475 RPD (**PRIMARY** — mayoritas artikel)
+> - **gemini-3.1-flash-lite**: 15 RPM, 150 RPD (**BACKUP** — hanya jika 3.5 kehabisan)
+> - **Total fleet: ~625 RPD**
+> - Distribusi round-robin dengan RPD guard: 3.5 mendapat prioritas
+>
+> 💡 **Evaluasi produksi menunjukkan** 3.5-flash-lite secara signifikan lebih presisi
+> membedakan signal (kebijakan/makro real) vs noise (pergerakan harian IHSG).
+> Prompt sudah dioptimalkan dengan aturan REJECT/ALLOW eksplisit.
 
 ---
 
@@ -149,11 +154,12 @@ Log:
 
 > **Catatan Timestamp:** Semua log display menggunakan WIB (UTC+7) agar mudah dibaca di Indonesia. Database tetap menyimpan watermark dalam UTC.
 
-> **Multi-Model Efficiency:** Dengan 3 model Gemini didistribusi round-robin (total 918 RPD):
-> - Maksimal **~40 artikel/siklus** (default `OXIDE_MAX_ARTICLES_PER_CYCLE=40`)
-> - Hingga **~900 artikel/hari** tanpa kehabisan kuota
+> **Multi-Model Efficiency — Opsi A:**
+> Dengan 2 model Gemini round-robin (total ~625 RPD):
+> - Maksimal **~15 artikel/siklus** (default `OXIDE_MAX_ARTICLES_PER_CYCLE=15`)
+> - Hingga **~625 artikel/hari** — 3.5-flash-lite mendapat prioritas
+> - Jika 3.5 kena RPD cap, request otomatis dialihkan ke 3.1 (backup 150 RPD)
 > - Setiap model punya rate limiter sendiri (RPM throttle)
-> - Jika satu model kena RPD cap, request otomatis dialihkan ke model lain
 
 ## 4. Production Deployment
 

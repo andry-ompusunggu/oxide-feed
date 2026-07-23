@@ -65,6 +65,17 @@ const LIFESTYLE_BLACKLIST: &[&str] = &[
     "fashion", "makeup", "outfit", "ootd",
 ];
 
+/// Daily Market Noise — fluktuasi harian tanpa pemicu struktural.
+/// Kalimat-kalimat ini lolos whitelist (karena mengandung "ihsg"/"rupiah"),
+/// tapi merupakan noise harian yang harus ditolak di tingkat lokal.
+/// Frasa ini cukup spesifik sehingga risiko false positive rendah.
+const DAILY_NOISE_BLACKLIST: &[&str] = &[
+    "dibuka menguat", "dibuka melemah", "ditutup menguat", "ditutup melemah",
+    "dibuka hijau", "ditutup hijau", "dibuka merah", "ditutup merah",
+    "pembukaan perdagangan", "penutupan perdagangan",
+    "pergerakan ihsg", "fluktuasi ihsg",
+];
+
 /// Netizen & Ujaran
 const TOXIC_BLACKLIST: &[&str] = &[
     "netizen", "hujat", "komen", "komentar", "warganet",
@@ -102,6 +113,7 @@ fn default_blacklist() -> Vec<String> {
     let mut all: Vec<&str> = Vec::new();
     all.extend_from_slice(CLICKBAIT_BLACKLIST);
     all.extend_from_slice(LIFESTYLE_BLACKLIST);
+    all.extend_from_slice(DAILY_NOISE_BLACKLIST);
     all.extend_from_slice(TOXIC_BLACKLIST);
     all.iter().map(|s| s.to_string()).collect()
 }
@@ -144,25 +156,45 @@ pub struct GeminiModelConfig {
 }
 
 impl GeminiModelConfig {
-    /// Build the default 2-model fleet (Gemini 3.6 Flash removed due to 503 instability).
+    /// Build the default 2-model fleet (Opsi A — Best Quality).
+    ///
+    /// ═══════════════════════════════════════════════════════════════
+    /// REKOMENDASI MODEL (berdasarkan evaluasi produksi):
+    ///
+    /// Evaluasi gatekeeper menunjukkan bahwa `gemini-3.5-flash-lite`
+    /// secara signifikan lebih presisi dalam membedakan signal
+    /// (kebijakan/makro real) vs noise (pergerakan harian IHSG/tips/
+    /// berita lokal) dibanding `gemini-3.1-flash-lite`.
+    ///
+    /// Opsi A — Best Quality (default):
+    ///   • gemini-3.5-flash-lite → 475 RPD (PRIMARY — mayoritas artikel)
+    ///   • gemini-3.1-flash-lite → 150 RPD (BACKUP — jika 3.5 kehabisan)
+    ///   • Total fleet: ~625 RPD
+    ///   • max_articles_per_cycle: 15 (default)
+    ///
+    /// ═══════════════════════════════════════════════════════════════
     ///
     /// Rate limits from Google AI Studio (Free Tier):
     /// - Gemini 3.1 Flash Lite: 15 RPM, 500 RPD
     /// - Gemini 3.5 Flash Lite: 15 RPM, 500 RPD
     ///
-    /// We use 95% of RPD (up from 90% since we no longer have the 3rd model).
+    /// (Gemini 3.6 Flash removed due to 503 instability issues.)
+    ///
+    /// We use 95% of RPD for safety margin.
     pub fn defaults() -> Vec<Self> {
         vec![
-            GeminiModelConfig {
-                name: "gemini-3.1-flash-lite".to_string(),
-                api_base: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent".to_string(),
-                rpd_limit: 475,  // 95% of 500 RPD
-                rpm_limit: 15,
-            },
+            // PRIMARY: Model terbaik — mayoritas artikel diproses di sini
             GeminiModelConfig {
                 name: "gemini-3.5-flash-lite".to_string(),
                 api_base: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent".to_string(),
                 rpd_limit: 475,  // 95% of 500 RPD
+                rpm_limit: 15,
+            },
+            // BACKUP: RPD lebih rendah — hanya dipakai jika 3.5 sedang penuh/error
+            GeminiModelConfig {
+                name: "gemini-3.1-flash-lite".to_string(),
+                api_base: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent".to_string(),
+                rpd_limit: 150,  // Cadangan 150 RPD
                 rpm_limit: 15,
             },
         ]
@@ -282,12 +314,13 @@ impl Config {
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
 
-        // Max articles per cycle (default 20 — dengan 2 model, total ~950 RPD / 48 siklus ≈ 20/cycle)
+        // Max articles per cycle (default 15 — Opsi A: total ~625 RPD / 48 siklus ≈ 13/cycle)
         // 0 = unlimited (proceed as fast as models allow)
+        // Jika > 15, risiko kena RPD cap lebih tinggi (artikel dikirim RAW BACKUP)
         let max_articles_per_cycle = env::var("OXIDE_MAX_ARTICLES_PER_CYCLE")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(20);
+            .unwrap_or(15);
 
         // Build model fleet — defaults for free tier, or override via env JSON
         // Format: JSON array of {name, rpd_limit, rpm_limit}
