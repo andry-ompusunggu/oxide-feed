@@ -14,7 +14,7 @@ RSS Feed
     │
     ▼
 ┌────────────────────────┐
-│  1. Ambil Berita       │  ← Setiap 60 menit (atau sesuai setting)
+│  1. Ambil Berita       │  ← Setiap 30 menit (default, bisa diubah)
 │     dari RSS           │
 └────────┬───────────────┘
          │
@@ -79,9 +79,9 @@ RSS Feed
 
 ### Langkah 1: Ambil Berita dari RSS
 
-Sistem membaca RSS feed yang sudah didaftarkan (default: CNBC Indonesia).
+Sistem membaca RSS feed yang sudah didaftarkan (default: Detik.com RSS).
 
-**Frekuensi:** Setiap 60 menit (bisa diubah via `POLL_INTERVAL_MINUTES`).
+**Frekuensi:** Setiap 30 menit (default, bisa diubah via `POLL_INTERVAL_MINUTES`).
 
 **Yang terjadi:**
 - Sistem membaca posisi terakhir (watermark) dari database
@@ -120,7 +120,7 @@ Untuk artikel yang lolos filter judul, sistem akan:
 2. Ambil teks lengkap artikelnya
 3. Kalau gagal ambil teks (misal website error), pakai ringkasan dari RSS
 
-> Jika teks yang didapat kurang dari 100 karakter, akan pakai ringkasan RSS saja.
+> Jika teks yang didapat kurang dari 200 karakter, circuit breaker aktif → artikel dikirim sebagai ⚡ QUICK ALERT langsung ke Telegram (tanpa diproses Gemini).
 
 ### Langkah 4: Cek Gemini — Apakah Berita Ini Penting?
 
@@ -132,7 +132,8 @@ Gemini akan jawab:
 **Kriteria penting:** Berita tentang perubahan regulasi besar, pergeseran ekonomi makro,
 aksi korporasi, atau krisis publik di Indonesia.
 
-> Butuh ~12 detik antar request ke Gemini (batas Free Tier: 5 request per menit).
+> ⏱️ Dengan Opsi A (2 model, 30 RPM aggregate): butuh ~4 detik antar request ke Gemini.
+> Model utama: gemini-3.5-flash-lite (presisi tinggi) + backup gemini-3.1-flash-lite.
 
 ### Langkah 5: Format Gemini (Sanitasi)
 
@@ -171,14 +172,15 @@ Hasil format dikirim ke channel/group Telegram.
 **Kalau gagal:**
 - ❌ JANGAN catat apa-apa
 - ❌ JANGAN update watermark
-- ↻ Akan dicoba ulang di cycle berikutnya (1 jam lagi)
+- ↻ Akan dicoba ulang di cycle berikutnya (30 menit lagi)
 
 ### Langkah 7: Notifikasi Startup & Error
 
 **Startup:** Setiap app dijalankan, mengirim notifikasi:
 ```
 🤖 OxideFeed v1.0 started
-📰 1 feed(s), every 60 min
+📰 1 feed(s), every 30 min
+🧠 2 model(s) — total 625 RPD
 ```
 
 **Error:** Kalau satu siklus gagal total, mengirim peringatan:
@@ -201,7 +203,7 @@ Database: KOSONG
 1. Ambil RSS
 2. Set watermark = sekarang (misal: Senin 08:00 WIB)
 3. Skip semua artikel existing (sudah terbit sebelum 08:00)
-4. Tidur 60 menit
+4. Tidur 30 menit
 5. Cycle berikutnya: proses artikel BARU (terbit setelah 08:00 WIB)
 ```
 
@@ -219,7 +221,7 @@ Database: KOSONG
 3. Proses 5 artikel terbaru (sesuai limit)
 4. Set watermark = sekarang setelah selesai
 5. Kirim 3-4 artikel (yang lolos Gemini) ke Telegram
-6. Tidur 60 menit
+6. Tidur 30 menit
 7. Cycle berikutnya: hanya artikel BARU setelah onboarding
 ```
 
@@ -238,20 +240,7 @@ Database: BISA DIHAPUS
 4. Kirim ringkasan log ke console
 ```
 
-> ⚠️ **HATI-HATI:** Bisa menghabiskan RPD (20 request/hari) dalam 1 cycle.
-
-```
-Watermark: BELUM ADA
-Database: KOSONG
-
-1. Ambil RSS
-2. Set watermark = sekarang (misal: Senin 08:00 WIB)
-3. Skip semua artikel existing (sudah terbit sebelum 08:00)
-4. Tidur 60 menit
-5. Cycle berikutnya: proses artikel BARU (terbit setelah 08:00 WIB)
-```
-
-> 🎯 **Kenapa skip semua?** Karena tidak ingin boros token AI untuk berita lama yang sudah basi.
+> ⚠️ **HATI-HATI:** Bisa menghabiskan RPD (625 request/hari) dalam beberapa cycle.
 
 ### Skenario B: Normal — Laptop Nyala Setiap Hari
 
@@ -264,7 +253,7 @@ Database: ADA
 3. Proses artikel baru yang muncul sejak kemarin
 4. Kirim ke Telegram
 5. Update watermark ke artikel terbaru
-6. Tidur 60 menit
+6. Tidur 30 menit
 ```
 
 ### Skenario C: Catch-Up — Laptop Mati 3 Hari (Weekend)
@@ -277,16 +266,14 @@ Laptop mati: Sabtu, Minggu
 Senin pagi 08:00 WIB — laptop dinyalakan:
 1. Ambil RSS
 2. Bandingkan: ambil semua artikel sejak Jumat 16:00 → 45 artikel baru!
-3. Proses 1 per 1 (jeda 12 detik antar artikel karena rate limit AI)
-4. ≈ 15 menit untuk selesai
+3. Proses via 2 model round-robin (jeda ~4 detik antar artikel — 30 RPM aggregate)
+4. ≈ 6 menit untuk selesai
 5. Kirim ke Telegram
 6. Update watermark
-7. Tidur 60 menit
+7. Tidur 30 menit
 ```
 
 > ✅ **Tidak ada berita yang terlewat.** Semua artikel selama weekend akan terproses.
-
-
 
 ---
 
@@ -316,22 +303,29 @@ meskipun laptop pindah zona waktu.
 
 ---
 
-## ⚡ Batasan Free Tier (Gemini 3.1 Flash-Lite)
+## ⚡ Batasan Free Tier — Opsi A (Multi-Model)
 
-| Metrik | Batas | Dampak ke Alur |
-|---|---|---|
-| **RPM** (Request per menit) | 5 | Maksimal 5 artikel diproses per menit → jeda 12 detik antar artikel |
-| **RPD** (Request per hari) | 20 | Maksimal 20 artikel per hari → kalau lagi banyak berita, yang ke-21 dikirim mentah |
+Sekarang menggunakan **2 model Gemini** secara simultan:
+
+| Metrik | Per Model | Total Fleet (Opsi A) | Dampak ke Alur |
+|---|---|---|---|
+| **RPM** (Request per menit) | 15/model | **30** | Maksimal 30 artikel diproses per menit → jeda ~4 detik antar artikel |
+| **RPD** (Request per hari) | 3.5: 475, 3.1: 150 | **625** | Mayoritas artikel diproses 3.5 (presisi tinggi). 3.1 sebagai backup. |
 
 **Estimasi Harian:**
-| Skenario | Artikel dari RSS | Lolos Filter Judul | Request Gemini | Status |
+| Skenario | Artikel dari RSS | Lolos Filter Lokal | Request Gemini | Status |
 |---|---|---|---|---|
-| Hari biasa | ~100 artikel | 2-5 artikel | 2-5 ✅ | Aman |
-| Hari ramai | ~100 artikel | 10-15 artikel | 10-15 ✅ | Masih aman |
-| Hari super ramai | ~100 artikel | 20+ artikel | 20 ❌ | Kelebihan RPD |
+| Hari biasa | ~100 artikel | 2-5 artikel | 2-5 ✅ | Sangat aman |
+| Hari ramai | ~100 artikel | 10-15 artikel | 10-15 ✅ | Aman |
+| Hari super ramai | ~100 artikel | 20+ artikel | 20+ ✅ | Masih aman (sampai 625) |
+| Banjir berita | ~100 artikel | 50+ artikel | 50+ ✅ | 3.5 cap 475 → backup 3.1 jalan |
+| Ekstrim | ~100 artikel | 100 artikel | 100 ❌ | Jika melebihi 625, sisanya RAW BACKUP |
 
-> Kalau kelebihan RPD, artikel sisanya tetap dikirim ke Telegram sebagai teks mentah
-> (raw backup), bukan dihilangkan.
+> Kalau kelebihan RPD, artikel sisanya tetap dikirim ke Telegram sebagai RAW BACKUP
+> (teks mentah dengan info total fleet usage), bukan dihilangkan.
+>
+> 💡 **Kelebihan Opsi A:** 3.5-flash-lite (presisi tinggi) menangani mayoritas artikel.
+> Baru jika 3.5 kehabisan RPD, 3.1-flash-lite (backup, 150 RPD) yang melanjutkan.
 
 ---
 
@@ -366,11 +360,17 @@ akan langsung di-skip.
 
 ### Q: Kalau Telegram error (server down), beritanya hilang?
 Tidak. Karena state TIDAK dicatat, artikel akan diproses ulang di cycle berikutnya
-(60 menit kemudian). Berita tetap aman.
+(30 menit kemudian). Berita tetap aman.
+
+### Q: Kenapa pakai 2 model Gemini? Kenapa tidak 1 saja?
+Dengan Opsi A, gemini-3.5-flash-lite (475 RPD) jadi model utama karena 
+evaluasi produksi menunjukkan ia jauh lebih presisi membedakan signal vs noise.
+gemini-3.1-flash-lite (150 RPD) sebagai backup — diapakai jika 3.5 kehabisan
+kuota atau error. Total 625 RPD, cukup untuk ~15 artikel per siklus (30 menit).
 
 ### Q: Berapa lama catch-up kalau libur seminggu?
-Estimasi: jika ada ~70 artikel baru, dengan jeda 12 detik antar request + ~8 detik
-waktu proses per artikel = ~20 detik × 70 = ~23 menit.
+Estimasi: jika ada ~70 artikel baru, dengan jeda ~4 detik antar request (15 RPM)
+dan 2 model round-robin = ~4 detik × 70 = ~5 menit.
 
 ### Q: Apakah bisa lihat log real-time?
 Ya, lihat bagian [Monitoring Logs di SETUP.md](./SETUP.md#45-monitoring-logs).

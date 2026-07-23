@@ -1,17 +1,17 @@
 # 🏗️ OxideFeed — Architecture
 
-**OxideFeed** is a lightweight, single-threaded news aggregator and LLM-powered sanitizer written in Rust. It fetches RSS feeds, filters articles via keyword rules (kategoris + contextual pair matching), validates relevance through **3 Gemini models distributed round-robin**, extracts structured facts, and delivers sanitized news to a Telegram channel.
+**OxideFeed** is a lightweight, single-threaded news aggregator and LLM-powered sanitizer written in Rust. It fetches RSS feeds, filters articles via keyword rules (kategoris + contextual pair matching), validates relevance through **2 Gemini models (Opsi A)**, extracts structured facts, and delivers sanitized news to a Telegram channel.
 
-**RAM Target:** < 30 MB RSS (50 MB cgroup limit recommended) | **Cost:** 100% Free Tier (Gemini × 3 models, Telegram Bot API, SQLite)
+**RAM Target:** < 30 MB RSS (50 MB cgroup limit recommended) | **Cost:** 100% Free Tier (Gemini × 2 models, Telegram Bot API, SQLite)
 
 ---
 
 ## Core Design Principles
 
 - **Single-threaded async** (`current_thread` tokio) — minimal CPU context switching on a dev laptop
-- **Multi-Model Fleet** — 3 Gemini models (3.1 Flash Lite, 3.5 Flash Lite, 3.6 Flash) round-robin untuk maksimalkan free tier quota
+- **Multi-Model Fleet (Opsi A)** — 2 Gemini models: 3.5 Flash Lite (primary, 475 RPD) + 3.1 Flash Lite (backup, 150 RPD) — round-robin dengan prioritas
 - **Per-Model RPD Guard** — Setiap model melacak pemakaian hariannya sendiri, skip model yang sudah cap
-- **Per-Model RPM Throttle** — Rate limiter otomatis sesuai limit masing-masing model (15 RPM → 4s, 5 RPM → 12s)
+- **Per-Model RPM Throttle** — Rate limiter otomatis sesuai limit masing-masing model (15 RPM → 4s)
 - **Embedded storage** (SQLite via `rusqlite`) — no external database daemon
 - **Rustls TLS** — no OpenSSL dependency, lower memory footprint
 - **Per-item watermark** — state commits only after successful Telegram delivery (HTTP 200 OK)
@@ -29,7 +29,7 @@
 │              │         main.rs (Runtime)                      │               │
 │              │  #[tokio::main(flavor="current_thread")]      │               │
 │              │  [ModelRouter] [Per-Model RPD] [Prioritasi]  │               │
-│              │        60-min loop cycle                      │               │
+│              │        30-min loop cycle (default)            │               │
 │              └──────────┬───────────────────────────────────┘                │
 │                         │                                                    │
 │         ┌───────────────┼───────────────┬────────────────┐                  │
@@ -37,12 +37,12 @@
 │   ┌──────────┐   ┌──────────┐   ┌────────────────┐   ┌──────────────┐      │
 │   │ ingest   │   │ storage  │   │   llm.rs       │   │  telegram    │      │
 │   │ .rs      │   │ .rs      │   │  ModelRouter   │   │  .rs         │      │
-│   │ RSS+     │   │ SQLite   │   │  ┌──────────┐  │   │ Bot API      │      │
-│   │ Scraper  │   │ State    │   │  │ Flash 1  │  │   │ MarkdownV2   │      │
-│   │ Filter   │   │ Per-Model│   │  ├──────────┤  │   │ Quick Alert  │      │
-│   │          │   │ RPD      │   │  │ Flash 2  │  │   │              │      │
-│   │          │   │ Tracker  │   │  ├──────────┤  │   │              │      │
-│   │          │   │          │   │  │ Flash 3  │  │   │              │      │
+│   │ RSS+     │   │ SQLite   │   │  ┌────────────────┐│   │ Bot API      │      │
+│   │ Scraper  │   │ State    │   │  │ 3.5 (PRIMARY)  ││   │ MarkdownV2   │      │
+│   │ Filter   │   │ Per-Model│   │  ├────────────────┤│   │ Quick Alert  │      │
+│   │          │   │ RPD      │   │  │ 3.1 (BACKUP)   ││   │              │      │
+│   │          │   │ Tracker  │   │  └────────────────┘│   │              │      │
+│   │          │   │          │   │                     │   │              │      │
 │   │          │   │          │   │  └──────────┘  │   │              │      │
 │   └──────────┘   └──────────┘   └────────────────┘   └──────────────┘      │
 │                         │                                                    │
@@ -246,12 +246,11 @@ CREATE TABLE model_daily_usage (
 
 **Model Fleet (Free Tier):**
 
-| # | Model | RPM | RPD | Cap (90%) | Interval |
+| # | Model (Opsi A) | RPM | RPD | Cap (95%) | Interval |
 |---|-------|:---:|:---:|:---------:|:--------:|
-| 1 | Gemini 3.1 Flash Lite | 15 | 500 | **450** | 4s |
-| 2 | Gemini 3.5 Flash Lite | 15 | 500 | **450** | 4s |
-| 3 | Gemini 3.6 Flash | 5 | 20 | **18** | 12s |
-| | **Total Fleet** | **35** | **1020** | **918** | — |
+| 1 | Gemini 3.5 Flash Lite **(PRIMARY)** | 15 | 500 | **475** | 4s |
+| 2 | Gemini 3.1 Flash Lite **(BACKUP)** | 15 | 500 | **150** | 4s |
+| | **Total Fleet** | **30** | **1000** | **625** | — |
 
 **ModelRouter — Round-Robin Distribution:**
 
@@ -279,9 +278,8 @@ Setiap instance punya:
 
 **Per-Model Rate Limiting (`enforce_rate_limit`):**
 ```rust
-// Gemini 3.1 Flash Lite (15 RPM): interval 4s
-// Gemini 3.5 Flash Lite (15 RPM): interval 4s
-// Gemini 3.6 Flash (5 RPM): interval 12s
+// Gemini 3.5 Flash Lite (15 RPM, PRIMARY): interval 4s — mendapat mayoritas artikel
+// Gemini 3.1 Flash Lite (15 RPM, BACKUP):  interval 4s — hanya jika 3.5 RPD cap
 ```
 
 **Combined Pipeline (1 API call per article per model):**
@@ -349,47 +347,46 @@ _(Gagal memuat teks lengkap. Buka tautan untuk membaca lebih lanjut.)_
 
 ---
 
-## Multi-Model RPD Guard System
+## Multi-Model RPD Guard System (Opsi A)
 
 ### Cara Kerja
 
 1. **Per-model daily tracking:** Setiap panggilan Gemini dicatat di tabel `model_daily_usage` dengan composite key `(date, model_name)`
 2. **Model Selection:** `ModelRouter::select_model(|name| get_usage(name))` — round-robin, skip model yang sudah ≥ `rpd_limit`
-3. **Jika semua model cap:** Artikel dikirim sebagai RAW BACKUP dengan info total fleet usage. Tidak ada berita hilang.
-4. **Increment:** `increment_api_usage(model_name)` dipanggil SEBELUM request (konservatif — prevent quota overrun)
-5. **Cycle Summary:** Setelah siklus selesai, log per-model usage + total fleet
+3. **Prioritas:** 3.5-flash-lite (RPD 475) mendapat mayoritas artikel. 3.1-flash-lite (RPD 150) sebagai backup jika 3.5 cap.
+4. **Jika semua model cap:** Artikel dikirim sebagai RAW BACKUP dengan info total fleet usage. Tidak ada berita hilang.
+5. **Increment:** `increment_api_usage(model_name)` dipanggil SEBELUM request (konservatif — prevent quota overrun)
+6. **Cycle Summary:** Setelah siklus selesai, log per-model usage + total fleet
 
 ### Fleet Capacity
 
-| Model | RPD Cap | RPM | Per-Cycle (24 siklus) |
+| Model | RPD Cap | RPM | Per-Cycle (48 siklus) |
 |---|---|---:|---:|
-| Gemini 3.1 Flash Lite | 450 | 15 | ~18 |
-| Gemini 3.5 Flash Lite | 450 | 15 | ~18 |
-| Gemini 3.6 Flash | 18 | 5 | ~1 |
-| **Total Fleet** | **918** | **35** | **~38** |
+| Gemini 3.5 Flash Lite **(PRIMARY)** | 475 | 15 | ~10 |
+| Gemini 3.1 Flash Lite **(BACKUP)** | 150 | 15 | ~3 |
+| **Total Fleet** | **625** | **30** | **~13** |
 
-### Skenario Catch-Up (Multi-Model)
+### Skenario Catch-Up (Opsi A)
 
 ```
 Laptop mati 3 hari → 45 artikel menumpuk
-→ Artikel 1: Model 1 (Flash Lite) → approve
-→ Artikel 2: Model 2 (Flash Lite) → approve
-→ Artikel 3: Model 3 (Flash) → reject
-→ Artikel 4: Model 1 → approve
+→ Artikel 1: 3.5 (PRIMARY) → approve
+→ Artikel 2: 3.1 (BACKUP) → approve
+→ Artikel 3: 3.5 (PRIMARY) → reject
 ...
-→ Artikel 40+ terakhir: semua model cap → RAW BACKUP
-→ 5 artikel terbaik terkirim dengan analisis dari 3 model berbeda
-~
+→ 3.1 mencapai 150 RPD cap → hanya 3.5 yang jalan
+→ 3.5 mencapai 475 RPD cap → RAW BACKUP untuk sisanya
+→ Mayoritas artikel diproses 3.5 (filter lebih presisi)
 ```
 
 **Perbandingan dengan single model:**
-| Metrik | Single Model (sebelum) | Multi-Model (sekarang) |
+| Metrik | Single Model (sebelum) | Multi-Model Opsi A (sekarang) |
 |---|---|---|
-| RPD Total | 15 (cap) | **918** (fleet) |
-| Artikel/cycle | ~5 | **~40** |
-| Artikel/hari | ~15 | **~400-900** |
-| Model digunakan | 1 | **3** |
-| RPM aggregate | 5 | **35** |
+| RPD Total | 15 (cap) | **625** (fleet) |
+| Artikel/cycle | ~5 | **~15** |
+| Artikel/hari | ~15 | **~625** |
+| Model digunakan | 1 | **2** (3.5 primary + 3.1 backup) |
+| RPM aggregate | 5 | **30** |
 
 ---
 
@@ -445,15 +442,15 @@ Jika scraping gagal dan fallback ke summary RSS (< 200 karakter), memaksa Gemini
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | **(required)** | Bot authentication |
 | `TELEGRAM_CHAT_ID` | **(required)** | Destination chat/channel |
-| `GEMINI_API_KEY` | **(required)** | Gemini API key (satu key untuk 3 model) |
+| `GEMINI_API_KEY` | **(required)** | Gemini API key (satu key untuk 2 model — Opsi A) |
 | `RSS_FEEDS` | `https://rss.detik.com/index.php` | Comma-separated URLs |
-| `POLL_INTERVAL_MINUTES` | `60` | Loop delay |
-| `OXIDE_WHITELIST` | *(built-in, 91 keywords)* | Comma-separated keyword whitelist (6 kategori) |
-| `OXIDE_BLACKLIST` | *(built-in, 30 keywords)* | Comma-separated keyword blacklist (3 kategori) |
+| `POLL_INTERVAL_MINUTES` | `30` | Loop delay |
+| `OXIDE_WHITELIST` | *(built-in, ~91 keywords)* | Comma-separated keyword whitelist (6 kategori) |
+| `OXIDE_BLACKLIST` | *(built-in, ~38 keywords)* | Comma-separated keyword blacklist (termasuk daily noise filter) |
 | `OXIDE_ONBOARDING_COUNT` | `0` | Process N articles on first boot (0 = skip all) |
 | `OXIDE_AUTO_VACUUM_DAYS` | `0` | Delete processed_news older than N days (0 = disabled) |
-| `OXIDE_MAX_ARTICLES_PER_CYCLE` | `40` | Max articles per cycle (dengan 3 model, total RPD 918) |
-| `OXIDE_GEMINI_MODELS` | *(3 model built-in)* | JSON array override untuk custom model fleet |
+| `OXIDE_MAX_ARTICLES_PER_CYCLE` | `15` | Max articles per cycle (Opsi A: total ~625 RPD / 48 siklus ≈ 13/siklus) |
+| `OXIDE_GEMINI_MODELS` | *(Opsi A built-in)* | JSON array override untuk custom model fleet |
 | `OXIDE_PROCESS_EXISTING` | `0` | Test mode: process ALL existing articles |
 | `OXIDE_PRINT_ARTICLES` | `0` | Debug: log each article filter result |
 | `RUST_LOG` | `info` | Log level (`error`, `warn`, `info`, `debug`, `trace`) |
@@ -476,7 +473,7 @@ oxide-feed/
 │   ├── config.rs           # Env var loader + GeminiModelConfig + keyword kategoris
 │   ├── storage.rs          # SQLite state manager + per-model RPD tracking
 │   ├── ingest.rs           # RSS fetch, filter kategoris, scrape, contextual bypass
-│   ├── llm.rs              # ModelRouter + per-model LlmClient (3 Gemini models)
+│   ├── llm.rs              # ModelRouter + per-model LlmClient (Opsi A: 3.5 primary + 3.1 backup)
 │   └── telegram.rs         # Telegram dispatcher (news, raw backup, quick alert)
 └── oxide_feed.db           # Auto-created SQLite database
 ```
